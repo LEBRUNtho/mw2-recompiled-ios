@@ -339,6 +339,12 @@ static int Choose(int choice) {
 }
 
 static int LauncherMain(int argc, char* argv[]) {
+  // The Files app only shows an app's folder once there is something in it,
+  // and the game is copied in from there when there is no computer at hand.
+  NSString* note = Documents(@"Put the game folder here.txt");
+  if (![[NSFileManager defaultManager] fileExistsAtPath:note])
+    [@"Copy the whole \"game\" folder into this folder, then open MW2 again.\n"
+        writeToFile:note atomically:YES encoding:NSUTF8StringEncoding error:NULL];
   // MW2_MODE=sp|mp starts that one without showing the launcher, for runs
   // started from the Mac (devicectl's --environment-variables).
   const char* mode = getenv("MW2_MODE");
