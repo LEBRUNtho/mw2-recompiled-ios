@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Builds the iOS/iPadOS app and optionally installs and launches it.
 #
-#   ios/build.sh device [--run]     a connected iPad, signed with your team
+#   ios/build.sh device [--run]     a connected iPad or iPhone, signed with your team
+#   ios/build.sh ipa                an unsigned MW2.ipa, to sign with a tool of
+#                                   your own (the profile needs the two
+#                                   entitlements of MW2.entitlements)
 #   ios/build.sh sim    [--run]     the iPad simulator
 #   ios/build.sh stage              the game folder to copy into the app (Finder)
 #
@@ -46,6 +49,7 @@ export MW2_IOS_DISPLAY_NAME MW2_IOS_APP_ID
 
 target=${1:-}; shift || true
 run=0
+unsigned=0
 for arg in "$@"; do
     case $arg in
     --run) run=1 ;;
@@ -76,6 +80,7 @@ stage)
     ;;
 sim) sdk=iphonesimulator; prefix=build-iossim; triple=arm64-apple-ios18.0-simulator ;;
 device) sdk=iphoneos; prefix=build-ios; triple=arm64-apple-ios18.0 ;;
+ipa) sdk=iphoneos; prefix=build-ios; triple=arm64-apple-ios18.0; unsigned=1 ;;
 *) sed -n '2,21p' "$0"; exit 1 ;;
 esac
 
@@ -83,7 +88,7 @@ for ppc in ppc$suffix ppc_mp$suffix; do
     [ -f "$ppc/ppc_func_mapping.cpp" ] || die "$ppc/ is missing: run TITLE=sp and TITLE=mp VERSION=$VERSION ./build.sh on this Mac first"
 done
 [ -x "$LLVM/clang++" ] || die "no clang++ in $LLVM: brew install llvm, or set LLVM"
-if [ "$sdk" = iphoneos ] && [ -z "$MW2_IOS_TEAM" ]; then
+if [ "$sdk" = iphoneos ] && [ "$unsigned" = 0 ] && [ -z "$MW2_IOS_TEAM" ]; then
     die "set MW2_IOS_TEAM (in ios/local.env) to sign for a device"
 fi
 
@@ -97,7 +102,8 @@ for dep in sdl3 ffmpeg_xma imgui; do
 done
 diagnostics=OFF; [ "$DIAGNOSTICS" != 0 ] && diagnostics=ON
 sysroot=$sdk
-# Every iPad that runs this is an M-series one.
+# Every iPad that runs this is an M-series one, and every iPhone with the
+# memory for it (the 15 Pro and later) has a newer core than the M1's.
 cpu=-mcpu=apple-m1
 # What the runtime and its libraries call, linked into each framework.
 frameworks=()
@@ -182,12 +188,36 @@ else
 fi
 xcodegen generate --quiet --spec ios/project.yml
 
+# iOS 27 refuses to start an app that was linked with its SDK and has no scene
+# life cycle, which SDL 3.2 does not have. The app's own executable is marked
+# as built with the 26 SDK, which is what the system reads; nothing else of
+# the build changes.
+before_scenes() {
+    local binary="$1/MW2" platform=$2
+    local major; major=$(xcrun --sdk "$sdk" --show-sdk-version | cut -d. -f1)
+    [ "$major" -ge 27 ] || return 0
+    xcrun vtool -set-build-version "$platform" 18.0 26.0 -replace -output "$binary" "$binary"
+}
+
 derived="$root/build-ios-derived"
 xcode_args=(-project ios/MW2.xcodeproj -scheme MW2 -configuration Release
             -sdk "$sdk" -derivedDataPath "$derived" -quiet)
 if [ "$sdk" = iphonesimulator ]; then
     xcodebuild "${xcode_args[@]}" -destination "platform=iOS Simulator,name=$MW2_IOS_SIMULATOR" build
     app="$derived/Build/Products/Release-iphonesimulator/MW2.app"
+    before_scenes "$app" iossim
+    codesign --force --sign - "$app"
+elif [ "$unsigned" = 1 ]; then
+    xcodebuild "${xcode_args[@]}" -destination generic/platform=iOS \
+        CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+    app="$derived/Build/Products/Release-iphoneos/MW2.app"
+    before_scenes "$app" ios
+    # Payload/MW2.app zipped, as every signing tool takes it.
+    rm -rf build-ios-ipa && mkdir -p build-ios-ipa/Payload
+    cp -R "$app" build-ios-ipa/Payload/
+    (cd build-ios-ipa && zip -qry MW2-unsigned.ipa Payload && rm -rf Payload)
+    echo "Built $root/build-ios-ipa/MW2-unsigned.ipa (unsigned)"
+    exit 0
 else
     xcodebuild "${xcode_args[@]}" -destination generic/platform=iOS -allowProvisioningUpdates build
     app="$derived/Build/Products/Release-iphoneos/MW2.app"

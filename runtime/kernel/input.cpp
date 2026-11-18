@@ -14,6 +14,7 @@
 #include "../player.h"
 #include "../signin.h"
 #include "../menu/menu.h"
+#include "../touch.h"
 #include "../stutters.h"
 #include "../gpu/vulkan/renderer.h"
 
@@ -328,7 +329,27 @@ PPC_FUNC(__imp__XamInputGetState)
     const bool keyboard = user == 0;
 #endif
     const uint16_t elsewhere = uint16_t((keyboard ? KeyboardButtons() : 0) | ScriptedButtons(user));
-    if (pad || elsewhere || (user ? g_scripted[user] : ScriptedAxesHeld(0) || player::Wanted()))
+    // The pad drawn on the screen stands in for the first controller while
+    // there is none (touch.h).
+    touch::Pad fingers;
+    bool touched = false;
+    if (user == 0)
+    {
+        if (pad)
+        {
+            // A real controller in use puts the screen's one away; one that
+            // is only there (the simulator always has one) does not.
+            bool used = false;
+            for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT && !used; i++)
+                used = SDL_GetGamepadButton(pad, SDL_GamepadButton(i));
+            for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT && !used; i++)
+                used = std::abs(int(SDL_GetGamepadAxis(pad, SDL_GamepadAxis(i)))) > 14000;
+            if (used) touch::PadUsed();
+        }
+        touched = touch::Active();
+        if (touched) touch::Sample(fingers);
+    }
+    if (pad || elsewhere || touched || (user ? g_scripted[user] : ScriptedAxesHeld(0) || player::Wanted()))
     {
 
 #ifndef __APPLE__
@@ -383,6 +404,13 @@ PPC_FUNC(__imp__XamInputGetState)
                             int16_t(-1 - axis(SDL_GAMEPAD_AXIS_LEFTY)),
                             axis(SDL_GAMEPAD_AXIS_RIGHTX),
                             int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY)) };
+        if (touched)
+        {
+            b |= fingers.buttons;
+            triggers[0] = std::max(triggers[0], fingers.triggers[0]);
+            triggers[1] = std::max(triggers[1], fingers.triggers[1]);
+            for (int i = 0; i < 4; i++) if (fingers.axes[i]) axes[i] = fingers.axes[i];
+        }
         if (user == 0)
         {
             // What a person did, before the autopilot adds to it: a recorded
@@ -491,7 +519,7 @@ PPC_FUNC(__imp__XamInputGetCapabilities)
     auto* caps = GuestPtr<XInputCapabilities>(ctx.r5.u32);
     if (!caps) { ctx.r3.u64 = X_ERROR_DEVICE_NOT_CONNECTED; return; }
 #ifdef MW2_USE_SDL
-    if (PadFor(user) || (user < 4 && g_scripted[user]) || (user == 0 && player::Wanted()))
+    if (PadFor(user) || (user < 4 && g_scripted[user]) || (user == 0 && (player::Wanted() || touch::Active())))
     {
         // What a wired 360 pad reports: every control it has at full range,
         // and both motors.

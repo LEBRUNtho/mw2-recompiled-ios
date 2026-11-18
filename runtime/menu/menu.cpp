@@ -11,6 +11,8 @@
 #include "../bots/bots.h"
 #include "../signin.h"
 #include "../install/install.h"
+#include "../touch.h"
+#include "../display_shape.h"
 
 #include <algorithm>
 #include <atomic>
@@ -56,6 +58,9 @@ namespace
         { "Bots", "Players of this runtime's own in the matches you host: System Link, Private Match." },
         { "Cheats", "Rank and unlocks, written to your saved stats the next time the game starts." },
         { "System", "The menu itself, and quitting to apply what waits for the next start." },
+        { "Touch", "The controller drawn on the screen, for playing without one: the left thumb walks, "
+                   "the right one turns the view, and the buttons are the Xbox 360's, as the game's "
+                   "prompts name them." },
     };
 
     struct State
@@ -167,11 +172,16 @@ namespace
 
         // ---- Display
         list.push_back(Switch(0, "Aspect Ratio",
-            "4:3 fills an iPad's screen: the game lays out its view and HUD for a 4:3 television, as it "
-            "did on one. 16:9 is the widescreen picture, with bars above and below it.",
+            display::Phone()
+                ? "16:9 is the game's widescreen picture, whole, between two bars on a phone's wider screen "
+                  "(Screen Fill zooms or stretches it). 4:3 lays the game out for a 4:3 television and "
+                  "stretches it across the screen."
+                : "4:3 fills an iPad's screen: the game lays out its view and HUD for a 4:3 television, as it "
+                  "did on one. 16:9 is the widescreen picture, with bars above and below it.",
             "MW2_ASPECT", {
 #if defined(__APPLE__) && TARGET_OS_IOS
-                { "4:3 (fill)", "" }, { "16:9 (letterbox)", "16:9" },
+                { display::Phone() ? "16:9" : "4:3 (fill)", "" },
+                { display::Phone() ? "4:3 (stretched)" : "16:9 (letterbox)", display::Phone() ? "4:3" : "16:9" },
 #else
                 { "16:9", "" }, { "4:3 (fill)", "4:3" },
 #endif
@@ -346,7 +356,61 @@ namespace
                 Notice("Settings restored to the console's");
             }));
         list.push_back(Action(5, "Menu Shortcut: RB + Start",
-            "Hold RB and press Start to open or close this menu. B closes it too.", [] {}));
+            "Hold RB and press Start to open or close this menu. B closes it too. On the screen's "
+            "controller, the MENU button does it.", [] {}));
+
+        // ---- Touch
+        {
+            // Each is read again by the screen's controller as it is written.
+            auto touchSwitch = [&list](std::string label, std::string description, const char* name,
+                                       std::vector<Choice> choices) {
+                Setting setting = Switch(6, std::move(label), std::move(description), name, std::move(choices), false);
+                const auto store = setting.store;
+                setting.store = [store](const std::string& value) { store(value); touch::Configure(); };
+                list.push_back(std::move(setting));
+            };
+            touchSwitch("Touch Controls",
+                "Automatic shows the buttons while no controller is connected, and hides them when "
+                "one is.",
+                "MW2_TOUCH", { { "Automatic", "" }, { "Always", "on" }, { "Off", "off" } });
+            {
+                std::vector<Choice> levels;
+                for (int level = 1; level <= 10; level++)
+                    levels.push_back({ std::to_string(level) + (level == 5 ? " (default)" : ""),
+                                       level == 5 ? "" : std::to_string(level) });
+                Setting sensitivity = Switch(6, "Look Sensitivity",
+                    "How far the view turns for a swipe of the right thumb. The game's own Sensitivity "
+                    "(its Options menu) sets the fastest it can turn: raise that one too if quick swipes "
+                    "feel held back.",
+                    "MW2_TOUCH_SENS", levels, false);
+                const auto store = sensitivity.store;
+                sensitivity.store = [store](const std::string& value) { store(value); touch::Configure(); };
+                sensitivity.current = [] {
+                    const char* value = env::Text("MW2_TOUCH_SENS");
+                    return value ? std::clamp(std::atoi(value), 1, 10) - 1 : 4;
+                };
+                list.push_back(std::move(sensitivity));
+            }
+            touchSwitch("Look",
+                "Direct turns the view by exactly what the thumb moved, as a mouse would. Stick sends "
+                "the swipe through the right stick, with the game's own speed limit and acceleration.",
+                "MW2_TOUCH_LOOK", { { "Direct", "" }, { "Stick", "stick" } });
+            touchSwitch("Aim (LT)",
+                "Toggle: a tap on LT aims down the sights, another lets go. Hold: aims while the "
+                "finger stays on it.",
+                "MW2_TOUCH_AIM", { { "Toggle", "" }, { "Hold", "hold" } });
+            touchSwitch("Sprint",
+                "Pushing the left thumb well past the stick's rim, forwards, sprints (a click of the "
+                "left stick). The LS button does it too.",
+                "MW2_TOUCH_SPRINT", { { "Push to sprint", "" }, { "LS button only", "0" } });
+            touchSwitch("Second Fire Button",
+                "Another RT under the left hand, to shoot while the right thumb is turning the view.",
+                "MW2_TOUCH_FIRE2", { { "Off", "" }, { "On", "1" } });
+            touchSwitch("Button Size", "How large the buttons are drawn.",
+                "MW2_TOUCH_SIZE", { { "Normal", "" }, { "Small", "small" }, { "Large", "large" } });
+            touchSwitch("Opacity", "How much of the picture shows through the buttons.",
+                "MW2_TOUCH_OPACITY", { { "50%", "" }, { "25%", "25" }, { "75%", "75" }, { "100%", "100" } });
+        }
 
         for (Setting& setting : list)
             if (setting.current) setting.chosen = setting.current();
@@ -526,6 +590,29 @@ bool menu::Input(uint16_t buttons, const int16_t axes[4])
     return true;
 }
 
+void menu::Touch(Tap what, int index)
+{
+    std::lock_guard held(s.lock);
+    if (!s.open || s.editing) return;
+    if (what == Tap::Close) { s.open = false; g_open = false; LOGI("menu: closed"); return; }
+    if (what == Tap::Category)
+    {
+        if (index < 0 || index >= int(kCategories.size())) return;
+        s.category = index;
+        s.row = Selectable(Entries(s.category), 0, 1);
+        return;
+    }
+    const std::vector<int> entries = Entries(s.category);
+    if (index < 0 || index >= int(entries.size())) return;
+    Setting& setting = s.settings[size_t(entries[size_t(index)])];
+    if (setting.header) return;
+    const bool chosen = s.row == index;
+    s.row = index;
+    if (what == Tap::Left) Step(setting, -1);
+    else if (what == Tap::Right) Step(setting, 1);
+    else if (chosen) Activate(setting);
+}
+
 menu::View menu::Snapshot()
 {
     std::lock_guard held(s.lock);
@@ -534,6 +621,7 @@ menu::View menu::Snapshot()
     if (!s.open) return view;
     for (const Category& category : kCategories) view.categories.push_back(category.name);
     view.category = s.category;
+    view.editing = s.editing;
     view.categoryDescription = kCategories[size_t(s.category)].description;
     const std::vector<int> entries = Entries(s.category);
     view.row = std::max(s.row, 0);

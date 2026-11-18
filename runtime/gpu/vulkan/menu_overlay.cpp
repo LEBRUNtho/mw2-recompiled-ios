@@ -8,6 +8,8 @@
 #if defined(MW2_HAVE_VULKAN) && defined(MW2_USE_SDL)
 #include "pipeline.h"
 #include "../../menu/menu.h"
+#include "../../touch.h"
+#include "../../display_shape.h"
 #include "../../log.h"
 
 #include <imgui.h>
@@ -16,6 +18,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <vector>
 #include <mutex>
 #include <unordered_map>
 
@@ -61,6 +65,15 @@ namespace
         uint32_t counted = 0, shown = 0;
     } o;
 
+    // The menu is laid out for a screen 1080 units high; a phone's is small
+    // in the hand, so there the units are larger.
+    float Unit(float height) { return height / (display::Phone() ? 800.0f : 1080.0f); }
+
+    // Where a finger does something on the menu, from its last drawing.
+    struct Spot { ImVec2 from, to; menu::Tap what; int index; };
+    std::vector<Spot> g_spots;
+    bool g_menuTakesFingers = false;
+
     bool Begin(const vk::overlay::Device& d, float height)
     {
         if (o.failed) return false;
@@ -102,7 +115,7 @@ namespace
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
         // Sized for the screen: a row's text is a thirtieth of its height.
-        const float unit = std::max(height / 1080.0f, 0.5f);
+        const float unit = std::max(Unit(height), 0.5f);
         ImFontConfig config;
         config.FontDataOwnedByAtlas = false;
         config.OversampleH = 2;
@@ -202,11 +215,16 @@ namespace
     void DrawMenu(const menu::View& view, ImVec2 size)
     {
         ImDrawList* list = ImGui::GetForegroundDrawList();
-        const float unit = size.y / 1080.0f;
+        const float unit = Unit(size.y);
         list->AddRectFilled({ 0, 0 }, size, kDim);
+        g_spots.clear();
 
-        // The columns: the rail, the rows, the description, centred.
-        const float margin = Snap(60 * unit), gap = Snap(24 * unit);
+        // The columns: the rail, the rows, the description, centred, and
+        // clear of a phone's notch.
+        float points = 0, insetLeft = 0, insetRight = 0;
+        touch::Insets(points, insetLeft, insetRight);
+        const float inset = points > 0 ? std::max(insetLeft, insetRight) * size.x / points : 0.0f;
+        const float margin = Snap(std::max(60 * unit, inset + 12 * unit)), gap = Snap(24 * unit);
         const float railW = Snap(280 * unit), descW = Snap(380 * unit);
         const float contentW = std::max(size.x - 2 * margin - railW - descW - 2 * gap, 300 * unit);
         const float total = railW + contentW + descW + 2 * gap;
@@ -226,6 +244,8 @@ namespace
             const float y = columnsY + float(i) * (rowH + rowGap);
             const bool on = int(i) == view.category;
             list->AddRectFilled({ railX, y }, { railX + railW, y + rowH }, on ? kAccent : kRailPanel, 6 * unit);
+            g_spots.push_back({ { railX, y - rowGap * 0.5f }, { railX + railW, y + rowH + rowGap * 0.5f },
+                                menu::Tap::Category, int(i) });
             TextIn(list, o.rows, { railX + 22 * unit, y + (rowH - o.rows->FontSize) * 0.5f },
                    on ? kAccentDark : kText, view.categories[i]);
         }
@@ -249,6 +269,19 @@ namespace
                                 6 * unit);
             const ImU32 text = on ? kSelText : kRowText;
             const float textY = y + (rowH - o.rows->FontSize) * 0.5f;
+            {
+                // A finger on the row chooses it (and, chosen, does what A
+                // does); on the right of a value's row, steps it either way.
+                const float top = y - rowGap * 0.5f, bottom = y + rowH + rowGap * 0.5f;
+                const float split = row.action ? contentX + contentW : contentX + contentW * 0.5f;
+                g_spots.push_back({ { contentX, top }, { split, bottom }, menu::Tap::Row, int(i) });
+                if (!row.action)
+                {
+                    const float middle = contentX + contentW * 0.75f;
+                    g_spots.push_back({ { split, top }, { middle, bottom }, menu::Tap::Left, int(i) });
+                    g_spots.push_back({ { middle, top }, { contentX + contentW, bottom }, menu::Tap::Right, int(i) });
+                }
+            }
             TextIn(list, o.rows, { contentX + 22 * unit, textY }, text, row.label);
             if (!row.action)
             {
@@ -287,6 +320,21 @@ namespace
         else if (view.restartPending)
             TextIn(list, o.body, { railX, legendY - o.body->FontSize - 24 * unit }, kWarn,
                    "Some changes wait for the next start: System > Apply and Quit.");
+        // With fingers, a button to close it, where the title's line ends.
+        if (g_menuTakesFingers)
+        {
+            const float side = Snap(64 * unit);
+            const ImVec2 from{ descX + descW - side, top }, to{ descX + descW, top + side };
+            list->AddRectFilled(from, to, kPanel, 6 * unit);
+            const float c = side * 0.28f;
+            const ImVec2 mid{ (from.x + to.x) * 0.5f, (from.y + to.y) * 0.5f };
+            list->AddLine({ mid.x - c, mid.y - c }, { mid.x + c, mid.y + c }, kRowText, 4 * unit);
+            list->AddLine({ mid.x - c, mid.y + c }, { mid.x + c, mid.y - c }, kRowText, 4 * unit);
+            g_spots.push_back({ from, to, menu::Tap::Close, 0 });
+            TextIn(list, o.body, { railX, legendY + 4 * unit }, kLegendText,
+                   "Tap a category or a row. Tap a value's left or right half to change it; tap a chosen row to do it.");
+            return;
+        }
         float lx = railX;
         const struct { const char* chip; const char* label; } legend[] = {
             { "A", "Select" }, { "B", "Close" }, { "<>", "Change" }, { "LB", "" }, { "RB", "Category" },
@@ -311,8 +359,10 @@ namespace
         char text[32];
         std::snprintf(text, sizeof text, "%u FPS", o.shown);
         ImDrawList* list = ImGui::GetForegroundDrawList();
-        const float unit = size.y / 1080.0f;
-        const ImVec2 at{ 24 * unit, 20 * unit };
+        const float unit = Unit(size.y);
+        float points = 0, insetLeft = 0, insetRight = 0;
+        touch::Insets(points, insetLeft, insetRight);
+        const ImVec2 at{ 24 * unit + (points > 0 ? insetLeft * size.x / points : 0.0f), 20 * unit };
         const ImVec2 extent = o.body->CalcTextSizeA(o.body->FontSize, FLT_MAX, 0, text);
         list->AddRectFilled({ at.x - 10 * unit, at.y - 4 * unit },
                             { at.x + extent.x + 10 * unit, at.y + extent.y + 4 * unit }, IM_COL32(0, 0, 0, 150),
@@ -321,13 +371,70 @@ namespace
     }
 }
 
-bool vk::overlay::Wanted() { return menu::Open() || menu::FrameCounter(); }
+namespace
+{
+    ImU32 Tinted(uint32_t rgb, float alpha)
+    {
+        return IM_COL32((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF,
+                        int(std::clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f));
+    }
+
+    // The screen's controller (touch.h): rings with the 360's names in them.
+    void DrawTouch(const touch::View& view, ImVec2 size)
+    {
+        ImDrawList* list = ImGui::GetForegroundDrawList();
+        const float scale = size.x / view.width;
+        const float a = view.opacity;
+        // The stick: where it rests, or where the thumb put it.
+        {
+            const ImVec2 base{ view.baseX * scale, view.baseY * scale };
+            const float radius = view.baseRadius * scale;
+            list->AddCircleFilled(base, radius, Tinted(0x000000, a * (view.stick ? 0.22f : 0.10f)), 48);
+            list->AddCircle(base, radius, Tinted(0xFFFFFF, a * (view.stick ? 0.75f : 0.35f)), 48, 2.0f * scale);
+            const ImVec2 knob{ view.knobX * scale, view.knobY * scale };
+            list->AddCircleFilled(knob, radius * 0.42f, Tinted(0xFFFFFF, a * (view.stick ? 0.55f : 0.22f)), 32);
+        }
+        for (const touch::Shape& shape : view.shapes)
+        {
+            const ImVec2 centre{ shape.x * scale, shape.y * scale };
+            const float radius = shape.radius * scale;
+            list->AddCircleFilled(centre, radius, shape.pressed ? Tinted(shape.tint, a * 0.55f)
+                                                                : Tinted(0x000000, a * 0.30f), 40);
+            list->AddCircle(centre, radius, Tinted(shape.tint, a * (shape.pressed ? 1.0f : 0.80f)), 40,
+                            (shape.pressed ? 3.0f : 1.8f) * scale);
+            const size_t letters = std::strlen(shape.label);
+            const float height = radius * (letters <= 2 ? 0.80f : 0.48f);
+            const ImVec2 extent = o.rows->CalcTextSizeA(height, FLT_MAX, 0, shape.label);
+            list->AddText(o.rows, height, { centre.x - extent.x * 0.5f, centre.y - extent.y * 0.5f },
+                          Tinted(shape.pressed ? 0xFFFFFF : shape.tint, std::min(1.0f, a * 1.5f)), shape.label);
+        }
+    }
+}
+
+bool vk::overlay::Wanted() { return menu::Open() || menu::FrameCounter() || touch::Active(); }
+
+bool vk::overlay::Tap(float x, float y)
+{
+    if (!g_menuTakesFingers) return false;
+    for (const Spot& spot : g_spots)
+        if (x >= spot.from.x && x < spot.to.x && y >= spot.from.y && y < spot.to.y)
+        {
+            menu::Touch(spot.what, spot.index);
+            break;
+        }
+    return true;
+}
 
 bool vk::overlay::Draw(const Device& d, VkCommandBuffer commands, VkImage image, VkExtent2D extent)
 {
     const menu::View view = menu::Snapshot();
     const bool counter = menu::FrameCounter() && !view.open;
-    if (!view.open && !counter) return false;
+    // The screen's controller, but under the open menu, which fingers then
+    // work directly; spelling the player's name still takes the buttons.
+    touch::View fingers = touch::Snapshot();
+    g_menuTakesFingers = view.open && !view.editing && fingers.shown;
+    if (g_menuTakesFingers) fingers.shown = false;
+    if (!view.open && !counter && !fingers.shown) return false;
     if (!Begin(d, float(extent.height))) return false;
     const VkImageView target = ViewOf(d.device, image);
     if (!target) return false;
@@ -338,7 +445,8 @@ bool vk::overlay::Draw(const Device& d, VkCommandBuffer commands, VkImage image,
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     if (view.open) DrawMenu(view, io.DisplaySize);
-    else DrawCounter(io.DisplaySize);
+    else if (counter) DrawCounter(io.DisplaySize);
+    if (fingers.shown) DrawTouch(fingers, io.DisplaySize);
     ImGui::Render();
 
     VkImageMemoryBarrier toAttachment{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
@@ -389,6 +497,7 @@ void vk::overlay::Shutdown(VkDevice device)
 
 #elif defined(MW2_HAVE_VULKAN)
 bool vk::overlay::Wanted() { return false; }
+bool vk::overlay::Tap(float, float) { return false; }
 bool vk::overlay::Draw(const Device&, VkCommandBuffer, VkImage, VkExtent2D) { return false; }
 void vk::overlay::ForgetSwapchain(VkDevice) {}
 void vk::overlay::Shutdown(VkDevice) {}

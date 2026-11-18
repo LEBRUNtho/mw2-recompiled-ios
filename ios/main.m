@@ -59,6 +59,11 @@ static NSAttributedString* Spaced(NSString* text, UIFont* font, UIColor* colour,
     _detailLabel = [[UILabel alloc] init];
     _detailLabel.attributedText = Spaced(detail, [UIFont systemFontOfSize:16 weight:UIFontWeightMedium],
                                          [UIColor colorWithWhite:1 alpha:0.6], 0.3);
+    // A phone's card is narrower than its title at full size.
+    _titleLabel.adjustsFontSizeToFitWidth = YES;
+    _titleLabel.minimumScaleFactor = 0.6;
+    _detailLabel.adjustsFontSizeToFitWidth = YES;
+    _detailLabel.minimumScaleFactor = 0.7;
     [self addSubview:_titleLabel];
     [self addSubview:_detailLabel];
     self.isAccessibilityElement = YES;
@@ -193,16 +198,19 @@ static NSAttributedString* Spaced(NSString* text, UIFont* font, UIColor* colour,
   _art.frame = CGRectMake(left, (height - artSide) / 2, artSide, artSide);
 
   const CGFloat x = left + artSide + gap;
-  const CGFloat cardHeight = 104, cardGap = 18;
+  // A phone held sideways is short: smaller cards, closer together.
+  const BOOL compact = height < 520;
+  const CGFloat cardHeight = compact ? 82 : 104, cardGap = compact ? 12 : 18;
+  const CGFloat titleGap = compact ? 18 : 36;
   [_title sizeToFit];
   [_subtitle sizeToFit];
   const CGFloat titleHeight = _title.bounds.size.height, subtitleHeight = _subtitle.bounds.size.height;
-  const CGFloat block = subtitleHeight + 8 + titleHeight + 36 + cardHeight * kModes + cardGap * (kModes - 1);
+  const CGFloat block = subtitleHeight + 8 + titleHeight + titleGap + cardHeight * kModes + cardGap * (kModes - 1);
   CGFloat y = (height - block) / 2;
   _subtitle.frame = CGRectMake(x, y, column, subtitleHeight);
   y += subtitleHeight + 8;
   _title.frame = CGRectMake(x, y, column, titleHeight);
-  y += titleHeight + 36;
+  y += titleHeight + titleGap;
   for (MW2ModeCard* card in _cards) {
     const CGAffineTransform transform = card.transform;
     card.transform = CGAffineTransformIdentity;
@@ -211,7 +219,7 @@ static NSAttributedString* Spaced(NSString* text, UIFont* font, UIColor* colour,
     y += cardHeight + cardGap;
   }
   [_hint sizeToFit];
-  _hint.frame = CGRectMake((width - _hint.bounds.size.width) / 2, height - 64,
+  _hint.frame = CGRectMake((width - _hint.bounds.size.width) / 2, height - (compact ? 30 : 64),
                            _hint.bounds.size.width, _hint.bounds.size.height);
 }
 
@@ -266,6 +274,7 @@ static int FirstChoice(void) {
 // Shows the launcher until a mode is started, and returns it.
 static int Choose(int choice) {
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) return choice;
+  SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");
   SDL_Window* window = SDL_CreateWindow("MW2", 0, 0, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
   UIWindow* uiWindow = window ? (__bridge UIWindow*)SDL_GetPointerProperty(
                                     SDL_GetWindowProperties(window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL)

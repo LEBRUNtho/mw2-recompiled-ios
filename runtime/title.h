@@ -122,6 +122,17 @@
 #define T_Memcard_InitializeSystem 8233CAF0
 #define T_Image_FlushMove      823DD658
 #define T_CG_ViewFov           8215B9D0
+// The view's angles as the pad turns them (touch_look.cpp): CL_GamepadMove,
+// the client states' pointer, and in a state the angles (pitch, yaw, roll)
+// and the flags whose 0x800 freezes the view. The key catchers' 0x10 is a
+// menu over the game. The aim assist's state holds the turn rate's scale
+// while aiming.
+#define T_CL_GamepadMove       8217D208
+#define T_DATA_LookClientsPtr  0x825A3FACu
+#define T_LOOK_ANGLES          0x3358u
+#define T_LOOK_FLAGS           0x008Cu
+#define T_DATA_KeyCatchers     0x825A1D48u
+#define T_DATA_AimAssist       0x82452790u
 #define T_CG_CullZoom          8215BC50
 #define T_DATA_TimeStampBundlePtr 0x820007B4u
 #define T_DATA_DebugMonitorPtr    0x820007F4u
@@ -150,6 +161,13 @@
 #define T_Image_FlushMove      823A52F8
 #define T_CG_ViewFov           8210FCD8
 #define T_CG_CullZoom          8210FF80
+// As the multiplayer's above; here the client states are the array itself,
+// and the title does not turn the view at all under a menu.
+#define T_CL_GamepadMove       8212B580
+#define T_DATA_LookClients     0x82648B08u
+#define T_LOOK_ANGLES          0x0054u
+#define T_LOOK_FLAGS           0x1084u
+#define T_DATA_AimAssist       0x82422490u
 #define T_DATA_TimeStampBundlePtr 0x82000780u
 #define T_DATA_DebugMonitorPtr    0x820007F8u
 #define T_DATA_DeviceTable        0x83A53020u

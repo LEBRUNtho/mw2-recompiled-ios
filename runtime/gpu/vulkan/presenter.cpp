@@ -49,6 +49,7 @@ uint64_t vk::PresentedFrames() { return 0; }
 #include "pipeline.h"
 #include "renderer.h"
 #include "menu_overlay.h"
+#include "../../touch.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -1106,6 +1107,13 @@ namespace
 #ifdef __APPLE__
         density = SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #endif
+        // A phone's home bar is dimmed, and its edge swipes ask twice: thumbs
+        // work right at the screen's edges. And MW2_TOUCH=on on a desktop
+        // takes the mouse for a finger, to try the screen's controller there.
+        SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");
+#if !(defined(__APPLE__) && TARGET_OS_IOS)
+        if (touch::Active()) SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
+#endif
         g.window = SDL_CreateWindow("Modern Warfare 2", kWidth, kHeight,
                                     SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | density |
                                     (g.fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
@@ -1125,6 +1133,44 @@ namespace
         return true;
     }
 
+    // The window's size in points and the part of it clear of the notch, for
+    // the screen's controller (touch.h).
+    void TellTheFingers()
+    {
+        int width = 0, height = 0;
+        if (!g.window || !SDL_GetWindowSize(g.window, &width, &height) || width <= 0 || height <= 0) return;
+        SDL_Rect safe{ 0, 0, width, height };
+        SDL_GetWindowSafeArea(g.window, &safe);
+        touch::Screen(float(width), float(height), float(safe.x), float(safe.y), float(safe.w), float(safe.h));
+    }
+
+    // A finger, to the settings menu when it is open and to the screen's
+    // controller otherwise.
+    void FingerAt(touch::Finger kind, uint64_t id, float x, float y)
+    {
+        int width = 0, height = 0;
+        if (!SDL_GetWindowSize(g.window, &width, &height)) return;
+        if (kind == touch::Finger::Down &&
+            vk::overlay::Tap(x * float(g.extent.width), y * float(g.extent.height)))
+            return;
+        touch::Event(kind, id, x * float(width), y * float(height));
+    }
+
+    bool Finger(const SDL_Event& event)
+    {
+        touch::Finger kind;
+        switch (event.type)
+        {
+        case SDL_EVENT_FINGER_DOWN:     kind = touch::Finger::Down; break;
+        case SDL_EVENT_FINGER_MOTION:   kind = touch::Finger::Move; break;
+        case SDL_EVENT_FINGER_UP:       kind = touch::Finger::Up; break;
+        case SDL_EVENT_FINGER_CANCELED: kind = touch::Finger::Cancel; break;
+        default: return false;
+        }
+        FingerAt(kind, uint64_t(event.tfinger.fingerID), event.tfinger.x, event.tfinger.y);
+        return true;
+    }
+
     void Worker()
     {
         crash::RegisterThread("vulkan presenter");
@@ -1136,6 +1182,7 @@ namespace
             return;
         }
         FollowTheDisplay();
+        TellTheFingers();
         g.ready = true;
         LOGI("vulkan: presenter running");
 
@@ -1143,13 +1190,14 @@ namespace
         {
             SDL_Event event;
             while (SDL_PollEvent(&event))
+                if (Finger(event)) {}
                 // Not `g.running = false`: that stops the pump, and with nothing
                 // pumping, the window stops repainting and SDL stops seeing the
                 // keyboard and the pad, which looks like a freeze while the guest
                 // runs on headless forever. Ending the process is what closing the
                 // window means. The shutdown joins this thread, so it runs on one
                 // of its own and this loop keeps the window alive until it lands.
-                if (event.type == SDL_EVENT_QUIT ||
+                else if (event.type == SDL_EVENT_QUIT ||
                     event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
                     crash::RequestExit("the window was closed");
                 // F10, F11, F9, F7 and F5 are diagnostics.
@@ -1213,8 +1261,14 @@ namespace
                 // The window's size in pixels changed -- dragged, maximised,
                 // fullscreen -- and the swapchain has to be its size.
                 else if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
-                         event.type == SDL_EVENT_WINDOW_RESIZED)
-                    g.remakeSwapchain = true;
+                         event.type == SDL_EVENT_WINDOW_RESIZED ||
+                         event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED)
+                {
+                    if (event.type != SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) g.remakeSwapchain = true;
+                    TellTheFingers();
+                }
+
+            touch::RunScript(FingerAt);
 
             // A frame to show, or 16 ms to go round the events again. Until the
             // renderer has finished one, the window shows its own colour.

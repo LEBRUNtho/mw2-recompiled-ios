@@ -24,6 +24,9 @@ namespace vk::overlay
     // in TRANSFER_DST_OPTIMAL. Leaves it in COLOR_ATTACHMENT_OPTIMAL and
     // returns true when it drew; leaves it alone and returns false otherwise.
     bool Draw(const Device& device, VkCommandBuffer commands, VkImage image, VkExtent2D extent);
+    // A finger came down at this pixel of the window. True when the settings
+    // menu is open and takes it (whether or not it was on anything).
+    bool Tap(float x, float y);
     // The swapchain was replaced (after the device is idle): the views of its
     // images go with it.
     void ForgetSwapchain(VkDevice device);

@@ -44,8 +44,15 @@ namespace menu
         int row = 0;
         std::string notice;         // the last thing done, for a few seconds
         bool restartPending = false;
+        bool editing = false;       // the player's name is being spelt
     };
     View Snapshot();
+
+    // A finger on the menu as the presenter drew it (menu_overlay.cpp): a
+    // category of the rail, a row (a second tap does what A does), one of its
+    // arrows, or the close button. `index` counts the view's categories or rows.
+    enum class Tap { Category, Row, Left, Right, Close };
+    void Touch(Tap what, int index);
 
     // The frame counter, drawn over the game while the menu is shut.
     bool FrameCounter();
