@@ -177,6 +177,18 @@ static int GuestMain(int argc, char** argv)
         setenv("MW2_SHADER_CACHE", "shaders.cache", 0);
         setenv("MW2_PIPELINE_CACHE", "pipelines.cache", 0);
     }
+#if TARGET_OS_IOS
+    // A phone has no terminal: every run keeps its log and its report in the
+    // app's Documents (the Files app shows them), and the run before it.
+    if (install::PlayerStart(argc, argv))
+    {
+        std::error_code ignored;
+        const auto folder = install::Folder(argc, argv);
+        std::filesystem::rename(folder / "mw2.log", folder / "mw2-previous.log", ignored);
+        setenv("MW2_LOG_FILE", "mw2.log", 0);
+        setenv("MW2_REPORT", "1", 0);
+    }
+#endif
 #endif
 
     // MW2_LOG_FILE=<path> sends the log there instead of the terminal. Every
