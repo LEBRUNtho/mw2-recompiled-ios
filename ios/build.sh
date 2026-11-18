@@ -44,7 +44,7 @@ case $VERSION in
     *)   die "VERSION must be tu6 or tu0" ;;
 esac
 : "${MW2_IOS_APP_ID:=$MW2_IOS_BUNDLE_ID}"
-MW2_IOS_DISPLAY_NAME=MW2
+: "${MW2_IOS_DISPLAY_NAME:=MW2}"   # the name under the icon (ios/local.env)
 export MW2_IOS_DISPLAY_NAME MW2_IOS_APP_ID
 
 target=${1:-}; shift || true
