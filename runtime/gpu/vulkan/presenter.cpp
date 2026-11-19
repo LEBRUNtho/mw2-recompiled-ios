@@ -48,6 +48,13 @@ uint64_t vk::PresentedFrames() { return 0; }
 #include "capture.h"
 #include "pipeline.h"
 #include "renderer.h"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
+#endif
 #include "menu_overlay.h"
 #include "../../touch.h"
 
@@ -1146,6 +1153,77 @@ namespace
 
     // A finger, to the settings menu when it is open and to the screen's
     // controller otherwise.
+#if defined(__APPLE__) && TARGET_OS_IOS
+    // iOS holds a finger that comes down near an edge of the screen back
+    // from the app, a quarter of a second and more, while its own gestures
+    // (home, the notification and control centres) decide whether it is
+    // theirs: the recognizers it puts on the window delay the touch's
+    // beginning. Every button of the screen's controller is near an edge.
+    // They are told not to delay; the gestures themselves still work. Asked
+    // again now and then, since the system adds its recognizers when it likes.
+    // Through the Objective-C runtime: this file is C++.
+    void LetEdgeTouchesThrough()
+    {
+        static std::chrono::steady_clock::time_point last;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last < std::chrono::seconds(2)) return;
+        last = now;
+        using Id = void*;
+        // How hot the system says the phone is, whenever it changes: past
+        // "fair" it slows the processor and the graphics chip, and the game
+        // with them.
+        {
+            const auto info = reinterpret_cast<Id (*)(Id, SEL)>(objc_msgSend)(
+                Id(objc_getClass("NSProcessInfo")), sel_registerName("processInfo"));
+            const long state = info ? reinterpret_cast<long (*)(Id, SEL)>(objc_msgSend)(
+                                          info, sel_registerName("thermalState")) : -1;
+            const bool saving = info && reinterpret_cast<signed char (*)(Id, SEL)>(objc_msgSend)(
+                                            info, sel_registerName("isLowPowerModeEnabled"));
+            static long saidState = -2;
+            static bool saidSaving = false;
+            if (state != saidState || saving != saidSaving)
+            {
+                static const char* const kNames[] = { "nominal", "fair", "serious", "critical" };
+                LOGI("device: thermal state %s%s", state >= 0 && state < 4 ? kNames[state] : "unknown",
+                     saving ? ", low power mode on" : "");
+                saidState = state;
+                saidSaving = saving;
+            }
+        }
+        void* window = g.window ? SDL_GetPointerProperty(SDL_GetWindowProperties(g.window),
+                                                        SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr) : nullptr;
+        if (!window) return;
+        const auto get = reinterpret_cast<Id (*)(Id, SEL)>(objc_msgSend);
+        const auto count = reinterpret_cast<unsigned long (*)(Id, SEL)>(objc_msgSend);
+        const auto at = reinterpret_cast<Id (*)(Id, SEL, unsigned long)>(objc_msgSend);
+        const auto set = reinterpret_cast<void (*)(Id, SEL, signed char)>(objc_msgSend);
+        static unsigned long told = 0;
+        unsigned long seen = 0;
+        // The window's own, and its root view's.
+        Id holders[2] = { window, nullptr };
+        if (Id controller = get(window, sel_registerName("rootViewController")))
+            holders[1] = get(controller, sel_registerName("view"));
+        for (Id holder : holders)
+        {
+            if (!holder) continue;
+            Id recognizers = get(holder, sel_registerName("gestureRecognizers"));
+            const unsigned long n = recognizers ? count(recognizers, sel_registerName("count")) : 0;
+            for (unsigned long i = 0; i < n; i++)
+            {
+                Id recognizer = at(recognizers, sel_registerName("objectAtIndex:"), i);
+                set(recognizer, sel_registerName("setDelaysTouchesBegan:"), 0);
+                set(recognizer, sel_registerName("setDelaysTouchesEnded:"), 0);
+                seen++;
+            }
+        }
+        if (seen != told) { told = seen; LOGI("touch: %lu of the system's gesture recognizers told not to hold touches back", seen); }
+    }
+#else
+    void LetEdgeTouchesThrough() {}
+#endif
+
+    double g_fingerAgeMs = 0;
+
     void FingerAt(touch::Finger kind, uint64_t id, float x, float y)
     {
         int width = 0, height = 0;
@@ -1153,7 +1231,7 @@ namespace
         if (kind == touch::Finger::Down &&
             vk::overlay::Tap(x * float(g.extent.width), y * float(g.extent.height)))
             return;
-        touch::Event(kind, id, x * float(width), y * float(height));
+        touch::Event(kind, id, x * float(width), y * float(height), g_fingerAgeMs);
     }
 
     bool Finger(const SDL_Event& event)
@@ -1167,7 +1245,10 @@ namespace
         case SDL_EVENT_FINGER_CANCELED: kind = touch::Finger::Cancel; break;
         default: return false;
         }
+        g_fingerAgeMs = double(SDL_GetTicksNS() - event.tfinger.timestamp) / 1e6;
+        touch::Measure(g_fingerAgeMs, g.buffered);
         FingerAt(kind, uint64_t(event.tfinger.fingerID), event.tfinger.x, event.tfinger.y);
+        g_fingerAgeMs = 0;
         return true;
     }
 
@@ -1269,13 +1350,16 @@ namespace
                 }
 
             touch::RunScript(FingerAt);
+            LetEdgeTouchesThrough();
 
             // A frame to show, or 16 ms to go round the events again. Until the
             // renderer has finished one, the window shows its own colour.
             bool queued = false;
             {
                 std::unique_lock lock(g.lock);
-                g.wake.wait_for(lock, std::chrono::milliseconds(16),
+                // With fingers on the screen, back round the events sooner:
+                // they are only read here.
+                g.wake.wait_for(lock, std::chrono::milliseconds(touch::Active() ? 3 : 16),
                                 [] { return !g.frameQueue.empty() || !g.running; });
                 queued = !g.frameQueue.empty();
             }

@@ -222,10 +222,13 @@ namespace
             msaa.description = "The console draws the world with 2x multisampling. 4x smooths edges further; "
                                "off is the lightest on the graphics chip.";
             msaa.choices = { { "Console (2x)", "" }, { "4x", "4" }, { "Off", "off" } };
-            if (display::Phone()) msaa.choices = { { "Console (2x)", "" }, { "Off", "off" } };
+            // On a phone, the console's only: drawn without it the game ran at
+            // half its rate on an iPhone 17 Pro Max.
+            if (display::Phone()) msaa.choices = { { "Console (2x)", "" } };
             msaa.restart = true;
             msaa.current = [] {
-                if (env::Flag("MW2_NO_MSAA")) return display::Phone() ? 1 : 2;
+                if (display::Phone()) return 0;
+                if (env::Flag("MW2_NO_MSAA")) return 2;
                 return env::Number("MW2_MSAA") >= 4 && !display::Phone() ? 1 : 0;
             };
             msaa.store = [](const std::string& value) {

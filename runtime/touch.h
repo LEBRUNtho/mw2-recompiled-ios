@@ -38,7 +38,15 @@ namespace touch
 
     enum class Finger { Down, Move, Up, Cancel };
     // A finger, in points from the window's top left.
-    void Event(Finger kind, uint64_t id, float x, float y);
+    // `ageMs` is how long ago the finger did it, when the window's thread
+    // knows: fingers are read in batches, and the view is turned by where the
+    // finger was at each moment, not by when its batch was read.
+    void Event(Finger kind, uint64_t id, float x, float y, double ageMs = 0.0);
+    // MW2_TOUCH_LOG=1: how old a finger's event was when the window's thread
+    // read it, and how many frames the presenter holds behind the one on
+    // screen; with the polls' own counts, logged once a second while fingers
+    // are at work.
+    void Measure(double eventAgeMs, double framesBuffered);
 
     // MW2_TOUCH_SCRIPT's fingers that are due, given to `finger` as fractions
     // of the window, from the thread that has the real ones.

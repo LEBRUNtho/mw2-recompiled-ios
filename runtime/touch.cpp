@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -105,7 +106,25 @@ namespace
         // points, and what the stick has not yet been able to turn, in degrees.
         float lookX = 0, lookY = 0;
         double owedYaw = 0, owedPitch = 0;
+        // The same turn as a path through time, for the direct look: how far
+        // the fingers had turned the view in all, at each of their moves.
+        struct Turned { Clock::time_point at; double x, y; };
+        std::deque<Turned> path;
+        double turnedX = 0, turnedY = 0;      // the path's end
+        double takenX = 0, takenY = 0;        // how far along it the title has been taken
         Clock::time_point polled{};
+
+        // MW2_TOUCH_LOG.
+        bool log = false;
+        struct Stats
+        {
+            int downs = 0, moves = 0, ups = 0, cancels = 0;
+            double ageSum = 0, ageMost = 0, buffered = 0;
+            int polls = 0, looks = 0, looksEmpty = 0, looksDouble = 0;
+            int movesSinceLook = 0;
+            double gapMost = 0, yaw = 0, pitch = 0;
+        } stats;
+        Clock::time_point statsAt{};
     } s;
 
     void ConfigureLocked()
@@ -127,6 +146,7 @@ namespace
         s.opacity = float(std::clamp(opacity, 10.0, 100.0) / 100.0);
         const char* look = env::Text("MW2_TOUCH_LOOK");
         s.lookByStick = look && std::strcmp(look, "stick") == 0;
+        s.log = env::Flag("MW2_TOUCH_LOG");
         s.turnRate = float(std::clamp(env::Real("MW2_TOUCH_TURN", 260.0), 30.0, 2000.0));
     }
 
@@ -190,6 +210,9 @@ namespace
         std::fill(std::begin(s.held), std::end(s.held), 0);
         s.lookX = s.lookY = 0;
         s.owedYaw = s.owedPitch = 0;
+        s.path.clear();
+        s.takenX = s.turnedX;
+        s.takenY = s.turnedY;
     }
 
     bool Pressed(int control, Clock::time_point now)
@@ -219,6 +242,14 @@ void touch::Insets(float& width, float& left, float& right)
     right = s.width > 0 ? s.width - s.safeX - s.safeW : 0;
 }
 
+void touch::Measure(double eventAgeMs, double framesBuffered)
+{
+    std::lock_guard held(s.lock);
+    s.stats.ageSum += eventAgeMs;
+    s.stats.ageMost = std::max(s.stats.ageMost, eventAgeMs);
+    s.stats.buffered = framesBuffered;
+}
+
 void touch::PadUsed()
 {
     std::lock_guard held(s.lock);
@@ -233,8 +264,52 @@ bool touch::TakeLook(float& yaw, float& pitch)
     std::lock_guard held(s.lock);
     if (!ActiveLocked() || s.lookByStick) return false;
     s.directAt = Clock::now();
-    yaw = s.lookX * s.degreesPerPoint;
-    pitch = s.lookY * s.degreesPerPoint * 0.8f;
+    // Where the fingers had got to a moment ago, between the two moves either
+    // side of that moment. The moves are read in batches a frame apart, and
+    // unevenly: taken as they are read, one frame turned by nothing and the
+    // next by two frames' worth, and the view juddered at a steady 60. The
+    // moment is far enough back for its batch to have been read.
+    constexpr auto kBehind = std::chrono::milliseconds(20);
+    const auto moment = s.directAt - kBehind;
+    double x = s.turnedX, y = s.turnedY;
+    if (!s.path.empty() && moment < s.path.back().at)
+    {
+        // The last move at or before the moment, and the one after it.
+        size_t after = 0;
+        while (after < s.path.size() && s.path[after].at <= moment) after++;
+        if (after == 0) { x = s.takenX; y = s.takenY; }
+        else
+        {
+            const State::Turned& a = s.path[after - 1];
+            const State::Turned& b = s.path[after];
+            const double span = std::chrono::duration<double>(b.at - a.at).count();
+            const double t = span > 0 ? std::chrono::duration<double>(moment - a.at).count() / span : 1.0;
+            x = a.x + (b.x - a.x) * t;
+            y = a.y + (b.y - a.y) * t;
+        }
+        while (s.path.size() > 2 && s.path[1].at <= moment) s.path.pop_front();
+    }
+    else
+        s.path.clear();
+    yaw = float(x - s.takenX) * s.degreesPerPoint;
+    pitch = float(y - s.takenY) * s.degreesPerPoint * 0.8f;
+    s.takenX = x;
+    s.takenY = y;
+    if (s.log)
+    {
+        const bool finger = std::any_of(s.captures.begin(), s.captures.end(), [](const Capture& c) {
+            return c.control == kLook || (c.control >= 0 && kControls[c.control].turns);
+        });
+        if (finger)
+        {
+            s.stats.looks++;
+            if (s.stats.movesSinceLook == 0) s.stats.looksEmpty++;
+            if (s.stats.movesSinceLook >= 2) s.stats.looksDouble++;
+            s.stats.yaw += std::fabs(yaw);
+            s.stats.pitch += std::fabs(pitch);
+        }
+        s.stats.movesSinceLook = 0;
+    }
     s.lookX = s.lookY = 0;
     s.owedYaw = s.owedPitch = 0;
     return yaw != 0 || pitch != 0;
@@ -252,7 +327,7 @@ bool touch::Active()
     return ActiveLocked();
 }
 
-void touch::Event(Finger kind, uint64_t id, float x, float y)
+void touch::Event(Finger kind, uint64_t id, float x, float y, double ageMs)
 {
     std::lock_guard held(s.lock);
     // A finger takes the screen's controller back from a real one.
@@ -261,6 +336,12 @@ void touch::Event(Finger kind, uint64_t id, float x, float y)
     const auto now = Clock::now();
     auto found = std::find_if(s.captures.begin(), s.captures.end(), [id](const Capture& c) { return c.id == id; });
 
+    if (s.log)
+    {
+        (kind == Finger::Down ? s.stats.downs : kind == Finger::Move ? s.stats.moves :
+         kind == Finger::Up ? s.stats.ups : s.stats.cancels)++;
+        if (kind == Finger::Move) s.stats.movesSinceLook++;
+    }
     switch (kind)
     {
     case Finger::Down:
@@ -297,6 +378,13 @@ void touch::Event(Finger kind, uint64_t id, float x, float y)
         {
             s.lookX += dx;
             s.lookY += dy;
+            s.turnedX += dx;
+            s.turnedY += dy;
+            const auto when = now - std::chrono::microseconds(int64_t(std::clamp(ageMs, 0.0, 100.0) * 1000.0));
+            // Kept in order: a batch's events can be a hair out of it.
+            const auto at = s.path.empty() ? when : std::max(when, s.path.back().at);
+            s.path.push_back({ at, s.turnedX, s.turnedY });
+            if (s.path.size() > 512) s.path.pop_front();
         }
         else if (capture.control == kStick && s.sprint)
         {
@@ -384,6 +472,24 @@ void touch::Sample(Pad& pad)
     const auto now = Clock::now();
     double dt = s.polled.time_since_epoch().count() ? std::chrono::duration<double>(now - s.polled).count() : 1.0 / 60;
     s.polled = now;
+    if (s.log)
+    {
+        s.stats.polls++;
+        s.stats.gapMost = std::max(s.stats.gapMost, dt * 1000.0);
+        if (now - s.statsAt >= std::chrono::seconds(1))
+        {
+            const State::Stats& t = s.stats;
+            const int events = t.downs + t.moves + t.ups + t.cancels;
+            if (events)
+                LOGI("touch: 1 s: %d down %d move %d up %d cancel; events read %.1f ms old on average, %.1f at most; "
+                     "%d polls (longest gap %.1f ms); view turned at %d of them: %d with no new move, %d with two or "
+                     "more; %.1f deg yaw %.1f pitch; %.2f frames buffered; %zu fingers down",
+                     t.downs, t.moves, t.ups, t.cancels, t.ageSum / events, t.ageMost, t.polls, t.gapMost,
+                     t.looks, t.looksEmpty, t.looksDouble, t.yaw, t.pitch, t.buffered, s.captures.size());
+            s.stats = State::Stats{};
+            s.statsAt = now;
+        }
+    }
     dt = std::clamp(dt, 1.0 / 240, 1.0 / 15);
 
     bool aimHeld = false;
@@ -432,6 +538,10 @@ void touch::Sample(Pad& pad)
     s.owedYaw += double(s.lookX) * s.degreesPerPoint;
     s.owedPitch += double(-s.lookY) * s.degreesPerPoint * 0.8;
     s.lookX = s.lookY = 0;
+    // The stick has carried it: the direct look has nothing to catch up on.
+    s.path.clear();
+    s.takenX = s.turnedX;
+    s.takenY = s.turnedY;
     const bool looking = std::any_of(s.captures.begin(), s.captures.end(), [](const Capture& c) {
         return c.control == kLook || (c.control >= 0 && kControls[c.control].turns);
     });

@@ -88,6 +88,27 @@ launch --environment-variables`) skips the launcher. Saves,
 `.env` settings and logs live in the app's Documents too, which the Files app
 shows.
 
+## iPhone
+
+The app also runs on an iPhone (tried on an iPhone 17 Pro Max, iOS 27): the
+picture is the game's 16:9 one between two bars (or filling the screen with
+its top and bottom trimmed: Settings > Display > Screen Fill), and with no
+controller connected the screen has one drawn on it, with the view turned by
+the title's own angles under the right thumb. See [docs/touch.md](../docs/touch.md).
+
+- `ios/build.sh ipa` builds an unsigned `MW2.ipa` to sign with a tool of your
+  own. `MW2_IOS_DISPLAY_NAME` in `ios/local.env` names the app.
+- On a phone the settings menu leaves out Resolution, Frame Rate and
+  Anti-Aliasing: drawn at 2x the game stopped as a mission started.
+- Every run keeps `mw2.log` (and the run before it, `mw2-previous.log`) in the
+  app's Documents, with the frame rate, the phone's thermal state and whether
+  Low Power Mode is on: in that mode the game runs at half its rate.
+- `MW2_TOUCH_LOG=1` logs, once a second, how late the fingers' events were
+  read and how the view's turns fell on the title's input polls.
+- Known: the controls are a little less immediate than a native port's (the
+  title keeps a frame or so in hand), and one run ended in a fault after the
+  graphics chip had fallen behind for a minute; not explained yet.
+
 ## Playing
 
 - **The settings menu:** hold RB and press Start. The d-pad or left stick

@@ -195,6 +195,7 @@ static int GuestMain(int argc, char** argv)
     {
         unsetenv("MW2_SCALE");
         unsetenv("MW2_MSAA");
+        unsetenv("MW2_NO_MSAA");
         unsetenv("MW2_FPS_LIMIT");
     }
 #endif
