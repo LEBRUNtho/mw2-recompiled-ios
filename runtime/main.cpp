@@ -20,6 +20,7 @@
 #include "platform.h"
 #include "report.h"
 #include "settings.h"
+#include "display_shape.h"
 #include "menu/menu.h"
 
 #include <unistd.h>
@@ -187,6 +188,14 @@ static int GuestMain(int argc, char** argv)
         std::filesystem::rename(folder / "mw2.log", folder / "mw2-previous.log", ignored);
         setenv("MW2_LOG_FILE", "mw2.log", 0);
         setenv("MW2_REPORT", "1", 0);
+    }
+    // A phone is kept to what it runs: a larger frame, more samples or
+    // another pacing left in the settings by an earlier build are dropped.
+    if (display::Phone())
+    {
+        unsetenv("MW2_SCALE");
+        unsetenv("MW2_MSAA");
+        unsetenv("MW2_FPS_LIMIT");
     }
 #endif
 #endif

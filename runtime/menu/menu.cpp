@@ -187,13 +187,20 @@ namespace
 #endif
             }, true));
         list.push_back(Switch(0, "Screen Fill",
-            "Fit shows the whole picture, with bars where the screen is another shape. Zoom fills the "
-            "screen by trimming the picture's edges; Stretch fills it by stretching the picture.",
-            "MW2_FILL", { { "Fit", "" }, { "Zoom", "zoom" }, { "Stretch", "stretch" } }, false));
+            "Fit shows the whole picture, with bars where the screen is another shape. Fill covers the "
+            "screen without distorting anything, by trimming the picture's edges (on a phone, a strip "
+            "at the top and the bottom). Stretch fills it by stretching the picture.",
+            "MW2_FILL", { { "Fit (whole picture)", "" }, { "Fill (no stretch)", "zoom" }, { "Stretch", "stretch" } },
+            false));
+        // A phone keeps the console's resolution and pacing: drawn at twice
+        // the size the game stops as a mission starts (an iPhone 17 Pro Max),
+        // and the faster pacing is experimental.
+        if (!display::Phone())
         list.push_back(Switch(0, "Resolution",
             "How many times the console's 1280x720 the game is drawn at, before it is fitted to the screen. "
             "Sharper at 2x; 3x asks a lot of the graphics chip.",
             "MW2_SCALE", { { "1x (720p)", "" }, { "2x (1440p)", "2" }, { "3x (2160p)", "3" } }, true));
+        if (!display::Phone())
         list.push_back(Switch(0, "Frame Rate",
             "60 is the console's pacing, a frame at every blank. Higher takes the game off the blank to "
             "its own limiter: smoother on a 120 Hz screen, and new to the game, so experimental.",
@@ -215,10 +222,11 @@ namespace
             msaa.description = "The console draws the world with 2x multisampling. 4x smooths edges further; "
                                "off is the lightest on the graphics chip.";
             msaa.choices = { { "Console (2x)", "" }, { "4x", "4" }, { "Off", "off" } };
+            if (display::Phone()) msaa.choices = { { "Console (2x)", "" }, { "Off", "off" } };
             msaa.restart = true;
             msaa.current = [] {
-                if (env::Flag("MW2_NO_MSAA")) return 2;
-                return env::Number("MW2_MSAA") >= 4 ? 1 : 0;
+                if (env::Flag("MW2_NO_MSAA")) return display::Phone() ? 1 : 2;
+                return env::Number("MW2_MSAA") >= 4 && !display::Phone() ? 1 : 0;
             };
             msaa.store = [](const std::string& value) {
                 Store("MW2_NO_MSAA", value == "off" ? "1" : "");
